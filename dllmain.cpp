@@ -14,13 +14,18 @@ main goal :
 2. commands like:
     runfile <path> for running lua files
     runstring <lua> for running lua code
-    watchfile <path> for watching a file or directory and automatically running it when it changes
-    watchstop <path> for stopping watching a file or directory
-3. watching for changes in a directory or path
+    watch <path> for watching a file and automatically running it when it changes
+    unwatch <path> for stopping watching a file
+3. watching for changes in a file
 */
 
-// watch file or directory function
-
+/*
+todo:
+file watching
+fix crash and stuff idk
+bindings?
+quack
+*/
 
 int (*original) (lua_State* L, const char* buff, size_t size, const char* name) = nullptr;
 lua_State* lState = nullptr;
@@ -32,6 +37,30 @@ int hooked_luaL_loadbuffer(lua_State* L, const char* buff, size_t size, const ch
     }
 
     return original(L, buff, size, name);
+}
+
+bool devbypass = false;
+
+void toggleDevBypass() {
+    devbypass = !devbypass;
+    if (devbypass) {
+        printf("dev bypass enabled!\n");
+
+        uint64_t address = (uint64_t)GetModuleHandle(NULL) + 0x45AAAC;
+        DWORD oldprotect = 0;
+        VirtualProtect((LPVOID)address, 6, PAGE_EXECUTE_READWRITE, &oldprotect);
+        memset((LPVOID)address, 0x90, 6);
+        VirtualProtect((LPVOID)address, 6, oldprotect, 0);
+    }
+    else {
+        printf("dev bypass disabled!\n");
+
+        uint64_t address = (uint64_t)GetModuleHandle(NULL) + 0x45AAAC;
+        DWORD oldprotect = 0;
+        VirtualProtect((LPVOID)address, 6, PAGE_EXECUTE_READWRITE, &oldprotect);
+        memcpy((LPVOID)address, { "\x0F\x85\xA2\x0A\x00\x00" }, 6);
+        VirtualProtect((LPVOID)address, 6, oldprotect, 0);
+    }
 }
 
 void main(HMODULE hModule) {
@@ -56,6 +85,8 @@ void main(HMODULE hModule) {
     MH_CreateHookApi(L"lua51.dll", "luaL_loadbuffer", hooked_luaL_loadbuffer, (LPVOID*) &original);
     MH_EnableHook(MH_ALL_HOOKS);
 
+    toggleDevBypass();
+
     printf("Executor Loade!\n");
 
     // read input and handle commands
@@ -71,8 +102,17 @@ void main(HMODULE hModule) {
                 luaL_dostring(lState, input.data() + 10);
             }
             else {
-                printf("just print a message. -Coldmeekly\n");
+                printf("No lua state!\n");
             }
+        }
+        else if (input == "dev") {
+            toggleDevBypass();
+        }
+        else if (input.starts_with("watch ")) {
+            //WatchFileOrDirectory(s2ws(input.data() + 6));
+        }
+        else if (input.starts_with("unwatch ")) {
+            //StopWatchingFileOrDirectory(s2ws(input.data() + 8));
         }
         else if (input.starts_with("runfile ")) {
             if (lState) {
@@ -83,10 +123,11 @@ void main(HMODULE hModule) {
                 luaL_dofile(lState, modifiedPath.c_str());
             }
             else {
-                printf("just print a message. -Coldmeekly\n");
+                printf("No lua state!\n");
             }
         }
         else if (input == "quit") {
+            printf("quitting...\n");
             ExitProcess(0);
             break;
         }
@@ -97,6 +138,8 @@ void main(HMODULE hModule) {
             printf("clear: clears console\n");
             printf("runstring: runs a lua string\n");
             printf("runfile: runs a file containing lua code\n");
+            printf("watch: watches a file or directory for changes\n");
+            printf("unwatch: stops watching a file or directory for changes\n");
 		}
         else if (input == "clear") { // clear console
             FillConsoleOutputCharacter(console, ' ', consoleInfo.dwSize.X * consoleInfo.dwSize.Y, cursorPosition, &numCellsWritten);
