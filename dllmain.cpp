@@ -9,6 +9,7 @@
 #include <regex>
 #include <map>
 #include <thread>
+#include <queue>
 
 /*
 main goal :
@@ -23,7 +24,6 @@ main goal :
 
 /*
 todo:
-fix crash and stuff idk
 reserve last line for input
 bindings?
 quack
@@ -39,6 +39,57 @@ int hooked_luaL_loadbuffer(lua_State* L, const char* buff, size_t size, const ch
     }
 
     return original(L, buff, size, name);
+}
+
+std::queue<std::string> scripts;
+void luahook_ExecQueue(lua_State* L, lua_Debug* ar)
+{
+    lua_sethook(L, nullptr, NULL, NULL);
+
+    while (!scripts.empty())
+    {
+        luaL_dostring(L, scripts.front().c_str());
+        lua_pop(L, 1);
+        scripts.pop();
+    }
+}
+
+void runstring(std::string str) {
+    if (lState != nullptr) {
+        scripts.push(str);
+
+        lua_sethook(lState, luahook_ExecQueue, LUA_MASKLINE, NULL);
+	}
+    else {
+        // print no error state
+        printf("ERROR: Lua state not initialized yet!\n");
+    }
+}
+
+std::queue<std::string> files;
+
+void luahook_ExecFileQueue(lua_State* L, lua_Debug* ar)
+{
+    lua_sethook(L, nullptr, NULL, NULL);
+
+    while (!files.empty())
+    {
+        luaL_dofile(L, files.front().c_str());
+        lua_pop(L, 1);
+        files.pop();
+    }
+}
+
+void runfile(std::string str) {
+    if (lState != nullptr) {
+        files.push(str);
+
+        lua_sethook(lState, luahook_ExecFileQueue, LUA_MASKLINE, NULL);
+    }
+    else {
+        // print no error state
+        printf("ERROR: Lua state not initialized yet!\n");
+    }
 }
 
 std::vector<std::string> ParseArgs(const std::string_view& input)
@@ -123,10 +174,8 @@ int watch(std::wstring path, std::wstring file = L"") {
                     //terminate string
                     content[size] = '\0';
                     // check if lState is valid
-                    if (lState != nullptr) {
-						// run string
-                        luaL_dostring(lState, content);
-					}
+
+                    runstring(content);
                 }
 
                 CloseHandle(file);
@@ -216,12 +265,7 @@ void main(HMODULE hModule) {
 			break;
 		}
         else if (input.starts_with("runstring ")) {
-            if (lState) {
-                luaL_dostring(lState, input.data() + 10);
-            }
-            else {
-                printf("No lua state!\n");
-            }
+            runstring(input.data() + 10);
         }
         else if (input == "dev") {
             toggleDevBypass();
@@ -267,7 +311,7 @@ void main(HMODULE hModule) {
                 std::string modifiedPath(path);
                 std::replace(modifiedPath.begin(), modifiedPath.end(), '\\', '/');
 
-                luaL_dofile(lState, modifiedPath.c_str());
+                runfile(modifiedPath.c_str());
             }
             else {
                 printf("No lua state!\n");
@@ -283,6 +327,7 @@ void main(HMODULE hModule) {
             printf("quit: quits the game\n");
             printf("unload: unloads the dll\n");
             printf("clear: clears console\n");
+            printf("dev: toggle dev bypass\n");
             printf("runstring: runs a lua string\n");
             printf("runfile: runs a file containing lua code\n");
             printf("watch: watches a file or directory for changes\n");
