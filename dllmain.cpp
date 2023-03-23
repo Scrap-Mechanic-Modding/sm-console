@@ -7,6 +7,8 @@
 #include <minhook.h>
 #include <string>
 #include <regex>
+#include <map>
+#include <thread>
 
 /*
 main goal :
@@ -21,8 +23,8 @@ main goal :
 
 /*
 todo:
-file watching
 fix crash and stuff idk
+reserve last line for input
 bindings?
 quack
 */
@@ -33,10 +35,126 @@ lua_State* lState = nullptr;
 int hooked_luaL_loadbuffer(lua_State* L, const char* buff, size_t size, const char* name) {
     if (std::string(name) == "...A/Scripts/game/characters/BaseCharacter.lua") {
         printf("BaseCharacter.lua loaded!\n");
-		lState = L;
+        lState = L;
     }
 
     return original(L, buff, size, name);
+}
+
+std::vector<std::string> ParseArgs(const std::string_view& input)
+{
+    const static std::regex regex(R"X("([\w\s\/\.]+)"|([\w\/\.\\]+))X");
+    std::vector<std::string> args;
+
+    bool inQuotes = false;
+    std::string currentArg;
+    for (const auto& c : input)
+    {
+        if (c == '"')
+        {
+            if (inQuotes)
+            {
+                args.push_back(currentArg);
+                currentArg = "";
+                inQuotes = false;
+            }
+            else
+                inQuotes = true;
+        }
+        else if (isspace(c))
+        {
+            if (inQuotes)
+                currentArg += c;
+            else if (currentArg.length() > 0)
+            {
+                args.push_back(currentArg);
+                currentArg = "";
+            }
+        }
+        else
+            currentArg += c;
+    }
+    if (currentArg.length() > 0)
+        args.push_back(currentArg);
+
+    return args;
+}
+
+std::atomic<bool> stop_thread(false);
+std::map<std::wstring, std::atomic<bool>> stop_flags;
+
+int watch(std::wstring path, std::wstring file = L"") {
+    // Open the directory to watch
+    HANDLE directory = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (directory == INVALID_HANDLE_VALUE) {
+        std::cerr << "Error: could not open directory" << std::endl;
+        return 1;
+    }
+
+    while (!stop_thread && !stop_flags[path]) {
+        // Wait for a change notification to occur
+        const DWORD buffer_size = 1024;
+        BYTE buffer[buffer_size];
+        DWORD bytes_returned;
+
+        if (ReadDirectoryChangesW(directory, buffer, buffer_size, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE, &bytes_returned, NULL, NULL)) {
+            // Loop through all change notifications in the buffer
+            FILE_NOTIFY_INFORMATION* notification = (FILE_NOTIFY_INFORMATION*)buffer;
+
+            std::wstring filename(notification->FileName, notification->FileNameLength / sizeof(wchar_t));
+            // full path
+            std::wstring fullpath = path + filename;
+
+            // if file modified, print content and if file is null or filename = file
+            if (notification->Action == FILE_ACTION_MODIFIED && (file.length() <= 0 || filename == file)) {
+                std::wcout << "File modified: " << fullpath << std::endl;
+                // open file
+                HANDLE file = CreateFileW(fullpath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (file == INVALID_HANDLE_VALUE) {
+                    std::cerr << "Error: could not open file" << std::endl;
+                    return 1;
+                }
+
+                // read file without a char vector
+                DWORD size = GetFileSize(file, NULL);
+                char* content = new char[size];
+                DWORD bytes_read;
+                if (ReadFile(file, content, size, &bytes_read, NULL)) {
+                    //terminate string
+                    content[size] = '\0';
+                    // check if lState is valid
+                    if (lState != nullptr) {
+						// run string
+                        luaL_dostring(lState, content);
+					}
+                }
+
+                CloseHandle(file);
+            }
+
+            notification = (FILE_NOTIFY_INFORMATION*)((BYTE*)notification + notification->NextEntryOffset);
+        }
+    }
+}
+
+// std::map key: path, value: thread
+std::map<std::wstring, std::thread> watches;
+
+// addwatch(path) -> thread
+void addwatch(std::wstring path, std::wstring file = L"") {
+    watches[path] = std::thread(watch, path, file);
+    // wprintf started watching <path+file>
+    wprintf(L"Started watching %s%s\n", path.c_str(), file.c_str());
+}
+
+// removewatch(path) -> thread
+void removewatch(std::wstring path) {
+    stop_flags[path] = true;
+    watches[path].detach();
+
+    // remove from map
+    watches.erase(path);
+    wprintf(L"Stopped watching %s\n", path.c_str());
 }
 
 bool devbypass = false;
@@ -109,10 +227,39 @@ void main(HMODULE hModule) {
             toggleDevBypass();
         }
         else if (input.starts_with("watch ")) {
-            //WatchFileOrDirectory(s2ws(input.data() + 6));
+            // remove watch 
+            std::string argsStr = input.data() + 6;
+
+            std::vector<std::string> args = ParseArgs(argsStr);
+
+            // check if args[0] exists safely
+            if (args.size() == 0) {
+				printf("Error: no path specified!\n");
+				continue;
+			}
+
+            // file = args[1] or ""
+            std::wstring file = L"";
+            if (args.size() > 1) {
+				file = std::wstring(args[1].begin(), args[1].end());
+            }
+
+			// path = args[0]
+			std::wstring path = std::wstring(args[0].begin(), args[0].end());
+			// add watch
+			addwatch(path, file);
         }
         else if (input.starts_with("unwatch ")) {
-            //StopWatchingFileOrDirectory(s2ws(input.data() + 8));
+            // remove watch 
+			std::string argsStr = input.data() + 8;
+			std::vector<std::string> args = ParseArgs(argsStr);
+
+			// removewatch if args[0] exists 
+            if (args.size() > 0) {
+                std::wstring path = std::wstring(args[0].begin(), args[0].end());
+                removewatch(path);
+            }
+
         }
         else if (input.starts_with("runfile ")) {
             if (lState) {
@@ -157,6 +304,12 @@ void main(HMODULE hModule) {
 
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
+
+    stop_thread = true;
+    // detach and unload all threads in watches
+    for (auto& [path, watch] : watches) {
+		watch.join();
+	}
 
     FreeLibraryAndExitThread(hModule, 0);
 }
