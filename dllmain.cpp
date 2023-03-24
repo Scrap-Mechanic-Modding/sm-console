@@ -25,9 +25,44 @@ main goal :
 /*
 todo:
 reserve last line for input
+be able to get state at any point in time
 bindings?
 quack
 */
+
+int (*original_logger) (void* self, const char* str, int type) = nullptr;
+
+// last message
+std::string last_message = "";
+// message count
+int message_count = 0;
+
+COORD coord = {0, 0};
+
+void hooked_logger(void* self, const char* str, int type) {
+	// if last message = str, don't print
+    if (last_message == str) {
+        message_count++;
+        std::string stdstr = str;
+
+        SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+
+        std::string count = " (x" + std::to_string(message_count) + ")";
+        std::string message = str + count;
+        original_logger(self, message.c_str(), type);
+    }
+    else {
+        message_count = 0;
+
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+        coord = csbi.dwCursorPosition;
+
+        original_logger(self, str, type);
+    }
+
+    last_message = str;
+}
 
 int (*original) (lua_State* L, const char* buff, size_t size, const char* name) = nullptr;
 lua_State* lState = nullptr;
@@ -159,26 +194,8 @@ int watch(std::wstring path, std::wstring file = L"") {
             // if file modified, print content and if file is null or filename = file
             if (notification->Action == FILE_ACTION_MODIFIED && (file.length() <= 0 || filename == file)) {
                 std::wcout << "File modified: " << fullpath << std::endl;
-                // open file
-                HANDLE file = CreateFileW(fullpath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                if (file == INVALID_HANDLE_VALUE) {
-                    std::cerr << "Error: could not open file" << std::endl;
-                    return 1;
-                }
-
-                // read file without a char vector
-                DWORD size = GetFileSize(file, NULL);
-                char* content = new char[size];
-                DWORD bytes_read;
-                if (ReadFile(file, content, size, &bytes_read, NULL)) {
-                    //terminate string
-                    content[size] = '\0';
-                    // check if lState is valid
-
-                    runstring(content);
-                }
-
-                CloseHandle(file);
+                // run file
+                runfile(std::string(fullpath.begin(), fullpath.end()));
             }
 
             notification = (FILE_NOTIFY_INFORMATION*)((BYTE*)notification + notification->NextEntryOffset);
@@ -250,6 +267,7 @@ void main(HMODULE hModule) {
     //luaL_loadbuffer(L, buff, size, name);
     MH_Initialize();
     MH_CreateHookApi(L"lua51.dll", "luaL_loadbuffer", hooked_luaL_loadbuffer, (LPVOID*) &original);
+    MH_CreateHook(LPVOID((uint64_t)GetModuleHandle(NULL) + 0x543A40), hooked_logger, (LPVOID*) &original_logger);
     MH_EnableHook(MH_ALL_HOOKS);
 
     toggleDevBypass();
