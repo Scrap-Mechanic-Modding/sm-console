@@ -30,12 +30,95 @@ bindings?
 quack
 */
 
+struct VolvoStructure
+{
+    void* m_functions[0xF];
+};
+
+using fGetNetworkingSocketInterface = std::add_pointer< uint64_t(VolvoStructure***) >::type;
+using fReceiveMessagesOnPollGroup = std::add_pointer< int(void*, void*, SteamNetworkingMessage_t**, int) >::type;
+
+fReceiveMessagesOnPollGroup o_Steam_ReceiveMessagesOnPollGroup = nullptr;
+int hk_Steam_ReceiveMessagesOnPollGroup(void* self, void* poll_group, SteamNetworkingMessage_t** out_msg, int msg_max)
+{
+    int numMessages = o_Steam_ReceiveMessagesOnPollGroup(self, poll_group, out_msg, msg_max);
+    SteamNetworkingMessage_t** outMsg = out_msg;
+    for (unsigned int i = 0; i < numMessages; i++)
+    {
+        SteamNetworkingMessage_t* message = outMsg[i];
+        unsigned int size = message->GetSize();
+        constexpr unsigned char Receiving = 1;
+
+        if (size > 0 && size != -1 && message->GetData() && message->m_usecTimeReceived > 0)
+        {
+            // if packetid == 30 return
+            if (PBYTE(message->GetData())[0] == 30) { return numMessages; }
+            if (PBYTE(message->GetData())[0] == 24) { return numMessages; }
+
+            printf("------------\n");
+            printf("Server > Client\n");
+            printf("PacketID: %u\n", PBYTE(message->GetData())[0]);
+            printf("Size: %u\n", size);
+
+            for (unsigned int i = 0; i < size; i++)
+            {
+                printf("%02X ", PBYTE(message->GetData())[i]);
+            }
+
+            printf("\n------------\n");
+        }
+    }
+
+    return numMessages;
+}
+
+using fSendMessageToConnection = std::add_pointer< EResult(void*, HSteamNetConnection, PBYTE, uint32, int, int64*) >::type;
+
+fSendMessageToConnection o_Steam_SendMessageToConnection = nullptr;
+int hk_Steam_SendMessageToConnection(void* self, HSteamNetConnection conn, PBYTE data, uint32 cbData, int nSendFlags, int64* out_msgNum)
+{
+    constexpr unsigned char Receiving = 0;
+    if (cbData > 0 && cbData != -1 && data)
+    {
+        // if packetid == 30 return
+        if (data[0] == 30)
+        {
+			return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum);
+		}
+
+        printf("------------\n");
+        printf("Client > Server\n");
+        printf("PacketID: %u\n", data[0]);
+        printf("Size: %u\n", cbData);
+
+        for (unsigned int i = 0; i < cbData; i++)
+        {
+            printf("%02X ", data[i]);
+        }
+
+        printf("\n------------\n");
+
+        /*if (data[0] == 9)
+        {
+            printf("X\n");
+        }*/
+
+        // Crashes server
+        /*if (data[0] == 26)
+        {
+            cbData = 0;
+            data[0] = 0;
+        }*/
+    }
+    return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum);
+}
+
 int (*original_logger) (void* self, const char* str, int type) = nullptr;
 
 // last message
 std::string last_message = "";
 // message count
-int message_count = 0;
+int message_count = 1;
 
 COORD coord = {0, 0};
 
@@ -227,6 +310,10 @@ bool devbypass = false;
 
 void toggleDevBypass() {
     devbypass = !devbypass;
+
+    PBYTE DevFlagAddress = (PBYTE)GetModuleHandle(NULL) + 0x12a7617;
+    *DevFlagAddress = devbypass;
+
     if (devbypass) {
         printf("dev bypass enabled!\n");
 
@@ -263,6 +350,25 @@ void main(HMODULE hModule) {
     freopen_s(&fstdout_new, "CONOUT$", "w", stdout);
     freopen_s(&fstderr_new, "CONOUT$", "w", stderr);
 
+    const PBYTE pBaseAddress = PBYTE(GetModuleHandle(NULL));
+    const fGetNetworkingSocketInterface pfnGetNetworkingSocketInterface = fGetNetworkingSocketInterface(pBaseAddress + 0x44B560);
+
+    VolvoStructure** ptr = nullptr;
+    void* funcPtr = nullptr;
+    DWORD oldProtect = 0;
+
+    pfnGetNetworkingSocketInterface(&ptr);
+    funcPtr = &(*ptr)->m_functions[14];
+
+    // Hook ReceiveMessagesOnPollGroup
+    oldProtect = 0;
+    VirtualProtect(funcPtr, 8, PAGE_READWRITE, &oldProtect);
+    o_Steam_ReceiveMessagesOnPollGroup = fReceiveMessagesOnPollGroup((*ptr)->m_functions[14]);
+    o_Steam_SendMessageToConnection = fSendMessageToConnection((*ptr)->m_functions[11]);
+    (*ptr)->m_functions[14] = &hk_Steam_ReceiveMessagesOnPollGroup;
+    (*ptr)->m_functions[11] = &hk_Steam_SendMessageToConnection;
+    VirtualProtect(funcPtr, 8, oldProtect, NULL);
+
     // hook luaL_loadbuffer with minhook using create hook api
     //luaL_loadbuffer(L, buff, size, name);
     MH_Initialize();
@@ -270,9 +376,10 @@ void main(HMODULE hModule) {
     MH_CreateHook(LPVOID((uint64_t)GetModuleHandle(NULL) + 0x543A40), hooked_logger, (LPVOID*) &original_logger);
     MH_EnableHook(MH_ALL_HOOKS);
 
-    toggleDevBypass();
 
     printf("Executor Loade!\n");
+    toggleDevBypass();
+    printf("Volvo Pointer: %llx\n", ptr);
 
     // read input and handle commands
     std::string input;
@@ -364,6 +471,14 @@ void main(HMODULE hModule) {
     freopen_s(&fstdin, "CONIN$", "r", stdin);
     freopen_s(&fstdout, "CONOUT$", "w", stdout);
     freopen_s(&fstderr, "CONOUT$", "w", stderr);
+
+
+    // Hook ReceiveMessagesOnPollGroup
+    oldProtect = 0;
+    VirtualProtect(funcPtr, 8, PAGE_READWRITE, &oldProtect);
+    (*ptr)->m_functions[14] = o_Steam_ReceiveMessagesOnPollGroup;
+    (*ptr)->m_functions[11] = o_Steam_SendMessageToConnection;
+    VirtualProtect(funcPtr, 8, oldProtect, NULL);
 
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
