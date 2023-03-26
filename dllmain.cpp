@@ -10,6 +10,8 @@
 #include <map>
 #include <thread>
 #include <queue>
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
 
 /*
 main goal :
@@ -59,6 +61,7 @@ int hk_Steam_ReceiveMessagesOnPollGroup(void* self, void* poll_group, SteamNetwo
             printf("Server > Client\n");
             printf("PacketID: %u\n", PBYTE(message->GetData())[0]);
             printf("Size: %u\n", size);
+            printf("Return address: %p\n", (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL));
 
             for (unsigned int i = 0; i < size; i++)
             {
@@ -81,15 +84,14 @@ int hk_Steam_SendMessageToConnection(void* self, HSteamNetConnection conn, PBYTE
     if (cbData > 0 && cbData != -1 && data)
     {
         // if packetid == 30 return
-        if (data[0] == 30)
-        {
-			return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum);
-		}
+        if (data[0] == 30) { return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum); }
+        if (data[0] == 24) { return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum); }
 
         printf("------------\n");
         printf("Client > Server\n");
         printf("PacketID: %u\n", data[0]);
         printf("Size: %u\n", cbData);
+        printf("Return address: %p\n",  (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL));
 
         for (unsigned int i = 0; i < cbData; i++)
         {
