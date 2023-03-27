@@ -11,6 +11,9 @@
 #include <thread>
 #include <queue>
 #include <intrin.h>
+#include <shellapi.h>
+
+
 #pragma intrinsic(_ReturnAddress)
 
 /*
@@ -31,6 +34,98 @@ be able to get state at any point in time
 bindings?
 quack
 */
+
+enum class ConsoleLogType
+{
+    Default = 0x1,
+    Profile = 0x2,
+    Resource = 0x4,
+    Shader = 0x8,
+    Buffer = 0x10,
+    Render = 0x20,
+    Network = 0x40,
+    System = 0x80,
+    Terrain = 0x100,
+    World = 0x200,
+    Lua = 0x800,
+    Print = 0x1000,
+    Audio = 0x400,
+    UGC = 0x2000,
+    Steam = 0x4000,
+    Error = 0x80000000,
+    Warning = 0x40000000
+};
+
+enum class ConsoleLogColors : WORD
+{
+    Default = 7,
+	Network = 8,
+    Error = 12,
+	Warning = 14
+};
+
+using fConsoleLog = std::add_pointer< void(void*, const std::string&, ConsoleLogColors, ConsoleLogType) >::type;
+
+class ConsoleLog__vftable {
+    uintptr_t function0;
+public:
+    fConsoleLog m_Log;
+private:
+    uintptr_t function1;
+};
+
+struct Console {
+    ConsoleLog__vftable* __vftable;
+
+    static ConsoleLogColors typeToColor(const ConsoleLogType type) {
+        switch (type) {
+        case ConsoleLogType::Default:
+            return ConsoleLogColors::Default;
+        case ConsoleLogType::Network:
+            return ConsoleLogColors::Network;
+        case ConsoleLogType::Error:
+            return ConsoleLogColors::Error;
+        case ConsoleLogType::Warning:
+            return ConsoleLogColors::Warning;
+        default:
+            return ConsoleLogColors::Default;
+        }
+    }
+
+    static Console& getInstancePtr() {
+        return **(Console**)(uintptr_t(GetModuleHandle(NULL)) + 0x12A76E0);
+    }
+
+    void log(const std::string& message, ConsoleLogType type = ConsoleLogType::Default) {
+        __vftable->m_Log(this, message, typeToColor(type), type);
+    }
+};
+
+// log function with std::format using orginal logger
+void log(ConsoleLogType type, const char* format, ...) {
+	char buffer[1024];
+	va_list args;
+	va_start(args, format);
+	vsprintf_s(buffer, format, args);
+	va_end(args);
+
+    Console::getInstancePtr().log(buffer, type);
+}
+
+// same for wstring
+void log(ConsoleLogType type, const wchar_t* format, ...) {
+	wchar_t buffer[1024];
+	va_list args;
+	va_start(args, format);
+	vswprintf_s(buffer, format, args);
+	va_end(args);
+	
+    // to std:string
+    std::wstring ws(buffer);
+    std::string str(ws.begin(), ws.end());
+
+    Console::getInstancePtr().log(str, type);
+}
 
 struct VolvoStructure
 {
@@ -57,18 +152,27 @@ int hk_Steam_ReceiveMessagesOnPollGroup(void* self, void* poll_group, SteamNetwo
             if (PBYTE(message->GetData())[0] == 30) { return numMessages; }
             if (PBYTE(message->GetData())[0] == 24) { return numMessages; }
 
-            printf("------------\n");
-            printf("Server > Client\n");
-            printf("PacketID: %u\n", PBYTE(message->GetData())[0]);
-            printf("Size: %u\n", size);
-            printf("Return address: %p\n", (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL));
-
+            // convert data to hex
+            std::string hex;
             for (unsigned int i = 0; i < size; i++)
             {
-                printf("%02X ", PBYTE(message->GetData())[i]);
-            }
+				char buf[4];
+				sprintf_s(buf, "%02X ", PBYTE(message->GetData())[i]);
+				hex += buf;
+			}
 
-            printf("\n------------\n");
+            
+            const char* string = (
+                "\n------------\n"
+                "Server > Client\n"
+                "PacketID: %u\n"
+                "Size: %u\n"
+                "Return address : %p\n"
+                "Data:\n%s\n"
+                "------------"
+            );
+
+            log(ConsoleLogType::Network, string, PBYTE(message->GetData())[0], size, (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL), hex.c_str());
         }
     }
 
@@ -87,22 +191,30 @@ int hk_Steam_SendMessageToConnection(void* self, HSteamNetConnection conn, PBYTE
         if (data[0] == 30) { return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum); }
         if (data[0] == 24) { return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum); }
 
-        printf("------------\n");
-        printf("Client > Server\n");
-        printf("PacketID: %u\n", data[0]);
-        printf("Size: %u\n", cbData);
-        printf("Return address: %p\n",  (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL));
-
+        // convert data to hex
+        std::string hex;
         for (unsigned int i = 0; i < cbData; i++)
         {
-            printf("%02X ", data[i]);
-        }
+			char buf[4];
+			sprintf_s(buf, "%02X ", data[i]);
+			hex += buf;
+		}
 
-        printf("\n------------\n");
+        const char* string = (
+            "\n------------\n"
+            "Client > Server\n"
+            "PacketID: %u\n"
+            "Size: %u\n"
+            "Return address : %p\n"
+            "Data:\n%s\n"
+            "------------"
+        );
+
+        log(ConsoleLogType::Network, string, data[0], cbData, (uintptr_t)_ReturnAddress() - (uintptr_t)GetModuleHandle(NULL), hex.c_str());
 
         /*if (data[0] == 9)
         {
-            printf("X\n");
+            log("X");
         }*/
 
         // Crashes server
@@ -115,18 +227,20 @@ int hk_Steam_SendMessageToConnection(void* self, HSteamNetConnection conn, PBYTE
     return o_Steam_SendMessageToConnection(self, conn, data, cbData, nSendFlags, out_msgNum);
 }
 
+
 int (*original_logger) (void* self, const char* str, int type) = nullptr;
 
 // last message
 std::string last_message = "";
-// message count
 int message_count = 1;
 
 COORD coord = {0, 0};
 
+bool logStacker = true;
+
 void hooked_logger(void* self, const char* str, int type) {
 	// if last message = str, don't print
-    if (last_message == str) {
+    if (last_message == str && logStacker) {
         message_count++;
         std::string stdstr = str;
 
@@ -137,7 +251,7 @@ void hooked_logger(void* self, const char* str, int type) {
         original_logger(self, message.c_str(), type);
     }
     else {
-        message_count = 0;
+        message_count = 1;
 
         CONSOLE_SCREEN_BUFFER_INFO csbi;
         GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
@@ -154,7 +268,7 @@ lua_State* lState = nullptr;
 
 int hooked_luaL_loadbuffer(lua_State* L, const char* buff, size_t size, const char* name) {
     if (std::string(name) == "...A/Scripts/game/characters/BaseCharacter.lua") {
-        printf("BaseCharacter.lua loaded!\n");
+        log(ConsoleLogType::Default, "BaseCharacter.lua loaded!");
         lState = L;
     }
 
@@ -169,6 +283,11 @@ void luahook_ExecQueue(lua_State* L, lua_Debug* ar)
     while (!scripts.empty())
     {
         luaL_dostring(L, scripts.front().c_str());
+
+        if (lua_isstring(L, -1)) {
+            log(ConsoleLogType::Error, lua_tostring(L, -1));
+        }
+
         lua_pop(L, 1);
         scripts.pop();
     }
@@ -182,11 +301,11 @@ void runstring(std::string str) {
 	}
     else {
         // print no error state
-        printf("ERROR: Lua state not initialized yet!\n");
+        log(ConsoleLogType::Error, "Lua state not initialized yet!");
     }
 }
 
-std::queue<std::string> files;
+std::queue<std::wstring> files;
 
 void luahook_ExecFileQueue(lua_State* L, lua_Debug* ar)
 {
@@ -194,13 +313,21 @@ void luahook_ExecFileQueue(lua_State* L, lua_Debug* ar)
 
     while (!files.empty())
     {
-        luaL_dofile(L, files.front().c_str());
+        // convert to string
+        std::string str(files.front().begin(), files.front().end());
+
+        luaL_dofile(L, str.c_str());
+        // error handling
+        if (lua_isstring(L, -1)) {
+            log(ConsoleLogType::Error, lua_tostring(L, -1));
+        }
+
         lua_pop(L, 1);
         files.pop();
     }
 }
 
-void runfile(std::string str) {
+void runfile(std::wstring str) {
     if (lState != nullptr) {
         files.push(str);
 
@@ -208,45 +335,28 @@ void runfile(std::string str) {
     }
     else {
         // print no error state
-        printf("ERROR: Lua state not initialized yet!\n");
+        log(ConsoleLogType::Error, "Lua state not initialized yet!");
     }
 }
 
-std::vector<std::string> ParseArgs(const std::string_view& input)
+std::vector<std::wstring> ParseArgs(const std::string_view& input)
 {
-    const static std::regex regex(R"X("([\w\s\/\.]+)"|([\w\/\.\\]+))X");
-    std::vector<std::string> args;
+    LPWSTR* szArglist;
+    int nArgs;
+    int i;
 
-    bool inQuotes = false;
-    std::string currentArg;
-    for (const auto& c : input)
+    // input to lpcwstr
+    std::wstring winput(input.begin(), input.end());
+
+    // CommandLineToArgvW
+    szArglist = CommandLineToArgvW(winput.c_str(), &nArgs);
+
+    // convert to vector
+    std::vector<std::wstring> args;
+    for (i = 0; i < nArgs; i++)
     {
-        if (c == '"')
-        {
-            if (inQuotes)
-            {
-                args.push_back(currentArg);
-                currentArg = "";
-                inQuotes = false;
-            }
-            else
-                inQuotes = true;
-        }
-        else if (isspace(c))
-        {
-            if (inQuotes)
-                currentArg += c;
-            else if (currentArg.length() > 0)
-            {
-                args.push_back(currentArg);
-                currentArg = "";
-            }
-        }
-        else
-            currentArg += c;
-    }
-    if (currentArg.length() > 0)
-        args.push_back(currentArg);
+		args.push_back(szArglist[i]);
+	}
 
     return args;
 }
@@ -255,10 +365,13 @@ std::atomic<bool> stop_thread(false);
 std::map<std::wstring, std::atomic<bool>> stop_flags;
 
 int watch(std::wstring path, std::wstring file = L"") {
+    bool verrystinkyfix = false;
+
     // Open the directory to watch
     HANDLE directory = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
     if (directory == INVALID_HANDLE_VALUE) {
-        std::cerr << "Error: could not open directory" << std::endl;
+        log(ConsoleLogType::Error, "Could not open directory");
+
         return 1;
     }
 
@@ -278,12 +391,19 @@ int watch(std::wstring path, std::wstring file = L"") {
 
             // if file modified, print content and if file is null or filename = file
             if (notification->Action == FILE_ACTION_MODIFIED && (file.length() <= 0 || filename == file)) {
-                std::wcout << "File modified: " << fullpath << std::endl;
+                verrystinkyfix = !verrystinkyfix;
+
+                if (verrystinkyfix) {
+					continue;
+				}
+
+                log(ConsoleLogType::Default, L"File modified: %s", fullpath.c_str());
+
                 // run file
-                runfile(std::string(fullpath.begin(), fullpath.end()));
+                runfile(fullpath);
             }
 
-            notification = (FILE_NOTIFY_INFORMATION*)((BYTE*)notification + notification->NextEntryOffset);
+            notification = reinterpret_cast<decltype(notification)>(notification->NextEntryOffset + reinterpret_cast<uintptr_t>(notification));
         }
     }
 }
@@ -293,9 +413,15 @@ std::map<std::wstring, std::thread> watches;
 
 // addwatch(path) -> thread
 void addwatch(std::wstring path, std::wstring file = L"") {
+    // check if already watching
+    if (watches.find(path) != watches.end()) {
+		log(ConsoleLogType::Warning, L"Already watching %s", path.c_str());
+		return;
+	}
+
     watches[path] = std::thread(watch, path, file);
-    // wprintf started watching <path+file>
-    wprintf(L"Started watching %s%s\n", path.c_str(), file.c_str());
+    // log started watching <path+file>
+    log(ConsoleLogType::Default, L"Started watching %s%s", path.c_str(), file.c_str());
 }
 
 // removewatch(path) -> thread
@@ -305,7 +431,7 @@ void removewatch(std::wstring path) {
 
     // remove from map
     watches.erase(path);
-    wprintf(L"Stopped watching %s\n", path.c_str());
+    log(ConsoleLogType::Default, L"Stopped watching %s", path.c_str());
 }
 
 bool devbypass = false;
@@ -317,7 +443,7 @@ void toggleDevBypass() {
     *DevFlagAddress = devbypass;
 
     if (devbypass) {
-        printf("dev bypass enabled!\n");
+        log(ConsoleLogType::Default, "dev bypass enabled!");
 
         uint64_t address = (uint64_t)GetModuleHandle(NULL) + 0x45AAAC;
         DWORD oldprotect = 0;
@@ -326,7 +452,7 @@ void toggleDevBypass() {
         VirtualProtect((LPVOID)address, 6, oldprotect, 0);
     }
     else {
-        printf("dev bypass disabled!\n");
+        log(ConsoleLogType::Default, "dev bypass disabled!");
 
         uint64_t address = (uint64_t)GetModuleHandle(NULL) + 0x45AAAC;
         DWORD oldprotect = 0;
@@ -337,7 +463,7 @@ void toggleDevBypass() {
 }
 
 void main(HMODULE hModule) {
-    FILE* fstdin = stdin;
+    FILE* fstdin = stdin;                                                                                                                                                                                                                                                                                                   
     FILE* fstdout = stdout;
     FILE* fstderr = stderr;
 
@@ -378,17 +504,22 @@ void main(HMODULE hModule) {
     MH_CreateHook(LPVOID((uint64_t)GetModuleHandle(NULL) + 0x543A40), hooked_logger, (LPVOID*) &original_logger);
     MH_EnableHook(MH_ALL_HOOKS);
 
-
-    printf("Executor Loade!\n");
+    log(ConsoleLogType::Default, "Executor Loade!");
     toggleDevBypass();
-    printf("Volvo Pointer: %llx\n", ptr);
+    log(ConsoleLogType::Default, "Volvo Pointer: %llx", ptr);
 
     // read input and handle commands
     std::string input;
     while (true) {
 		std::getline(std::cin, input);
+
+        last_message = "";
+        message_count = 1;
+
+        coord = { 0, 0 };
+
         if (input == "unload") {
-            printf("unloading...\n");
+            log(ConsoleLogType::Default, "unloading...");
 			break;
 		}
         else if (input.starts_with("runstring ")) {
@@ -401,71 +532,77 @@ void main(HMODULE hModule) {
             // remove watch 
             std::string argsStr = input.data() + 6;
 
-            std::vector<std::string> args = ParseArgs(argsStr);
+            std::vector<std::wstring> args = ParseArgs(argsStr);
 
             // check if args[0] exists safely
             if (args.size() == 0) {
-				printf("Error: no path specified!\n");
+				log(ConsoleLogType::Error, "No path specified!");
 				continue;
 			}
 
             // file = args[1] or ""
             std::wstring file = L"";
             if (args.size() > 1) {
-				file = std::wstring(args[1].begin(), args[1].end());
+				file = args[1];
             }
 
 			// path = args[0]
-			std::wstring path = std::wstring(args[0].begin(), args[0].end());
+			std::wstring path = args[0];
 			// add watch
 			addwatch(path, file);
         }
         else if (input.starts_with("unwatch ")) {
             // remove watch 
 			std::string argsStr = input.data() + 8;
-			std::vector<std::string> args = ParseArgs(argsStr);
+			std::vector<std::wstring> args = ParseArgs(argsStr);
 
 			// removewatch if args[0] exists 
             if (args.size() > 0) {
-                std::wstring path = std::wstring(args[0].begin(), args[0].end());
-                removewatch(path);
+                removewatch(args[0]);
             }
 
         }
         else if (input.starts_with("runfile ")) {
             if (lState) {
-                std::string_view path = input.data() + 8;
-                std::string modifiedPath(path);
-                std::replace(modifiedPath.begin(), modifiedPath.end(), '\\', '/');
+                std::string argsStr = input.data() + 8;
+                std::vector<std::wstring> args = ParseArgs(argsStr);
 
-                runfile(modifiedPath.c_str());
+                // removewatch if args[0] exists 
+                if (args.size() > 0) {
+                    runfile(args[0]);
+                }
             }
             else {
-                printf("No lua state!\n");
+                log(ConsoleLogType::Default, "No lua state!");
             }
         }
         else if (input == "quit") {
-            printf("quitting...\n");
+            log(ConsoleLogType::Default, "quitting...");
             ExitProcess(0);
             break;
         }
         else if (input == "help") {
-			printf("help: show this message\n");
-            printf("quit: quits the game\n");
-            printf("unload: unloads the dll\n");
-            printf("clear: clears console\n");
-            printf("dev: toggle dev bypass\n");
-            printf("runstring: runs a lua string\n");
-            printf("runfile: runs a file containing lua code\n");
-            printf("watch: watches a file or directory for changes\n");
-            printf("unwatch: stops watching a file or directory for changes\n");
+			log(ConsoleLogType::Default, "help: show this message");
+            log(ConsoleLogType::Default, "quit: quits the game");
+            log(ConsoleLogType::Default, "unload: unloads the dll");
+            log(ConsoleLogType::Default, "clear: clears console");
+            log(ConsoleLogType::Default, "dev: toggle dev bypass");
+            log(ConsoleLogType::Default, "runstring: runs a lua string");
+            log(ConsoleLogType::Default, "runfile: runs a file containing lua code");
+            log(ConsoleLogType::Default, "watch: watches a file or directory for changes");
+            log(ConsoleLogType::Default, "unwatch: stops watching a file or directory for changes");
 		}
         else if (input == "clear") { // clear console
             FillConsoleOutputCharacter(console, ' ', consoleInfo.dwSize.X * consoleInfo.dwSize.Y, cursorPosition, &numCellsWritten);
             SetConsoleCursorPosition(console, cursorPosition);
+
+            last_message = "";
+            message_count = 1;
+
+            coord = { 0, 0 };
         }
         else {
-			printf("Unknown command: %s\n", input.c_str());
+			log(ConsoleLogType::Warning, "Unknown command: %s", input.c_str());
 		}
 	}
 
@@ -488,7 +625,7 @@ void main(HMODULE hModule) {
     stop_thread = true;
     // detach and unload all threads in watches
     for (auto& [path, watch] : watches) {
-		watch.join();
+		watch.join(); // needs fixing, doesnt unload properly when files are being watched
 	}
 
     FreeLibraryAndExitThread(hModule, 0);
