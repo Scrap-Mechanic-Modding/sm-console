@@ -35,6 +35,54 @@ bindings?
 quack
 */
 
+struct Contraption
+{
+    inline static Contraption* GetInstance()
+    {
+        return *reinterpret_cast<Contraption**>(std::uintptr_t(GetModuleHandle(NULL)) + 0x12A7618);
+    }
+
+    private:
+        Contraption() = delete;
+        ~Contraption() = delete;
+};
+
+struct PlayStateManager
+{
+    inline static PlayStateManager* GetInstance()
+    {
+		return *reinterpret_cast<PlayStateManager**>(std::uintptr_t(Contraption::GetInstance()) + 0x160);
+    }
+
+    private:
+        PlayStateManager() = delete;
+		~PlayStateManager() = delete;
+};
+
+struct PlayState
+{
+    inline static PlayState* GetInstance()
+    {
+		return *reinterpret_cast<PlayState**>(std::uintptr_t(PlayStateManager::GetInstance()) + 0x20);
+	}
+
+	private:
+		PlayState() = delete;
+		~PlayState() = delete;
+};
+
+struct SteamNetworkClient
+{
+    inline static SteamNetworkClient* GetInstance()
+    {
+		return *reinterpret_cast<SteamNetworkClient**>(std::uintptr_t(PlayState::GetInstance()) + 0x130);
+	}
+
+	private:
+        SteamNetworkClient() = delete;
+		~SteamNetworkClient() = delete;
+};
+
 enum class ConsoleLogType
 {
     Default = 0x1,
@@ -103,7 +151,7 @@ struct Console {
 
 // log function with std::format using orginal logger
 void log(ConsoleLogType type, const char* format, ...) {
-	char buffer[1024];
+	static char buffer[0xA00000];
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(buffer, format, args);
@@ -114,7 +162,7 @@ void log(ConsoleLogType type, const char* format, ...) {
 
 // same for wstring
 void log(ConsoleLogType type, const wchar_t* format, ...) {
-	wchar_t buffer[1024];
+    static wchar_t buffer[0xA00000];
 	va_list args;
 	va_start(args, format);
 	vswprintf_s(buffer, format, args);
@@ -527,6 +575,37 @@ void main(HMODULE hModule) {
         }
         else if (input == "dev") {
             toggleDevBypass();
+        }
+        else if (input.starts_with("connect ")) {
+            // args = steamid, passphrase
+            std::string argsStr = input.data() + 8;
+            std::vector<std::wstring> args = ParseArgs(argsStr);
+
+            // steamid = 
+            std::wstring steamid = args[0];
+            std::wstring passphrase = args[1];
+
+            auto playstate = PlayState::GetInstance();
+            if (playstate == 0) {
+                log(ConsoleLogType::Error, "Not in game!");
+                continue;
+            }
+
+            // connection info = playstate + 8
+            int64_t connectionInfo = *(int64_t*)((uintptr_t)playstate + 0x8);
+
+            *(int64_t*)(connectionInfo + 0x8) = std::stoll(steamid);
+
+            std::string passphraseStr(passphrase.begin(), passphrase.end());
+            *(std::string*)(connectionInfo + 0x10) = passphraseStr;
+
+            // make function pointer float *__fastcall sub_140459D10(__int64 PlayState, float *a2)
+            typedef float* (__fastcall* sub_140459D10_t)(int64_t, float*);
+            sub_140459D10_t sub_140459D10 = (sub_140459D10_t)((uint64_t)GetModuleHandle(NULL) + 0x459D10);
+
+            float bruh[3];
+
+            sub_140459D10((int64)playstate, bruh);
         }
         else if (input.starts_with("watch ")) {
             // remove watch 
